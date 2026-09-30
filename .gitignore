@@ -1,0 +1,15 @@
+# Build output
+/target
+**/*.rs.bk
+*.pdb
+
+# Partial downloads left by manual testing
+*.part
+*.zdm
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
