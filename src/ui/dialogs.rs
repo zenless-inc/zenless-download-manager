@@ -151,6 +151,7 @@ impl App {
             dlg.probed_url.clear();
         }
         let duplicate = self.snap.downloads.iter().any(|d| d.url == dlg.url.trim());
+        let waiting = self.pending_asks.len() + self.pending_batches.len();
 
         let mut outcome = NewDownloadOutcome::Keep;
         let modal = egui::Modal::new(egui::Id::new("new_download")).show(ctx, |ui| {
@@ -166,6 +167,10 @@ impl App {
                         other => format!("from {other}"),
                     };
                     kit::pill(ui, &label, p.accent2);
+                }
+                if waiting > 0 {
+                    kit::pill(ui, &format!("{waiting} more waiting"), p.text_dim)
+                        .on_hover_text("More downloads from your browser open after this one.");
                 }
             });
             if let Some(t) = dlg.page_title.as_deref().filter(|t| !t.is_empty()) {

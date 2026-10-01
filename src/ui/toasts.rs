@@ -21,6 +21,8 @@ pub enum ToastAction {
     ShowInFolder(PathBuf),
     DownloadUrl(String),
     CopyText(String),
+    /// Open a web page (e.g. the release notes after an update).
+    OpenUrl(String),
 }
 
 struct Toast {

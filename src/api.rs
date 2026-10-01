@@ -19,6 +19,16 @@ pub const PORT: u16 = 6812;
 pub const MAX_BODY: usize = 8 * 1024 * 1024;
 pub const CLIENT_NAME: &str = concat!("zenless-dm/", env!("CARGO_PKG_VERSION"));
 
+/// The port to use: [`PORT`], or `ZENLESS_DM_PORT` (tests that run next to
+/// a real instance; browser extensions only know 6812).
+pub fn port() -> u16 {
+    std::env::var("ZENLESS_DM_PORT")
+        .ok()
+        .and_then(|p| p.trim().parse().ok())
+        .filter(|&p: &u16| p != 0)
+        .unwrap_or(PORT)
+}
+
 const ALLOWED_ORIGIN_PREFIXES: [&str; 4] = [
     "chrome-extension://",
     "moz-extension://",
@@ -86,6 +96,11 @@ pub trait ApiBackend: Send + Sync {
     fn quit(&self);
     /// A client talked to us (for "last contact" in the settings).
     fn contact(&self, client: &str);
+    /// Versions of the browser extensions installed next to the app
+    /// (`{"chrome": "…", "firefox": "…"}`, missing ones left out).
+    fn extensions(&self) -> Value {
+        json!({})
+    }
 }
 
 fn valid_download_url(url: &str) -> bool {
@@ -133,7 +148,13 @@ fn route(req: &ApiRequest, backend: &dyn ApiBackend, has_origin: bool) -> ApiRes
     match (method.as_str(), path) {
         ("GET", "/ping") => ApiResponse::json(
             200,
-            json!({ "ok": true, "app": crate::APP_ID, "name": crate::APP_NAME, "version": crate::VERSION }),
+            json!({
+                "ok": true,
+                "app": crate::APP_ID,
+                "name": crate::APP_NAME,
+                "version": crate::VERSION,
+                "extensions": backend.extensions(),
+            }),
         ),
         ("GET", "/status") => ApiResponse::json(200, backend.status()),
         ("POST", "/download") => {
@@ -320,6 +341,10 @@ impl ApiBackend for EngineBackend {
             }
             s.last_contact = Some(c);
         }
+    }
+
+    fn extensions(&self) -> Value {
+        Value::Object(crate::extensions::installed_versions())
     }
 }
 
@@ -532,7 +557,10 @@ mod tests {
         let r = handle(&req("GET", "/ping", Some(o), None, ""), &m, PORT);
         assert_eq!(r.status, 200);
         assert_eq!(r.cors_origin.as_deref(), Some(o));
-        assert_eq!(r.body.unwrap()["app"], "zenless-dm");
+        let body = r.body.unwrap();
+        assert_eq!(body["app"], "zenless-dm");
+        assert_eq!(body["version"], crate::VERSION);
+        assert_eq!(body["extensions"], json!({}), "no installer layout next to the test binary");
     }
 
     #[test]

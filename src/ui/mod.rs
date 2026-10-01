@@ -13,6 +13,7 @@ mod widgets;
 use crate::Cli;
 use crate::shared::kit;
 use crate::shared::theme::{Palette, ThemeManager, alpha};
+use crate::shared::updater::{ReleaseInfo, Status as UpdateStatus, UpdateAction, Updater, UpdaterConfig};
 use dialogs::{BatchDialog, NewDownloadDialog};
 use eframe::egui::{self, vec2};
 use egui_phosphor::regular as icons;
@@ -117,6 +118,8 @@ pub struct App {
 
     new_dl: Option<NewDownloadDialog>,
     pending_asks: VecDeque<DownloadRequest>,
+    /// Batches that arrived while another dialog was open.
+    pending_batches: VecDeque<zenless_dm::engine::BatchRequest>,
     batch: Option<BatchDialog>,
     confirm_delete: Option<Vec<Id>>,
     delete_files: bool,
@@ -128,6 +131,25 @@ pub struct App {
 
     toasts: Toasts,
     actions: Vec<Action>,
+    /// Self-updater: banner, Settings › About › Updates, install on exit.
+    updater: Updater,
+    /// "Browser extension updated" notices from the updater thread.
+    ext_notices: crate::ext_update::Notices,
+    /// `ZENLESS_UPDATE_TEST_RESTART=1`: restart as soon as an update is
+    /// ready, exactly like "Restart now" (end-to-end tests).
+    restart_when_ready: bool,
+}
+
+/// The updater settings for this app.
+fn updater_config() -> UpdaterConfig {
+    UpdaterConfig {
+        app_id: zenless_dm::APP_ID,
+        app_name: zenless_dm::APP_NAME,
+        repo: zenless_dm::GITHUB_REPO,
+        asset: zenless_dm::RELEASE_ASSET,
+        current_version: zenless_dm::VERSION,
+        data_dir: zenless_dm::settings::data_dir(),
+    }
 }
 
 impl App {
@@ -139,7 +161,8 @@ impl App {
         let mut settings = config.settings.clone().normalized();
         let engine = Engine::start(config, tx.clone(), notify.clone()).map_err(|e| format!("Could not start the download engine: {e}"))?;
 
-        let api_status = Arc::new(Mutex::new(ApiStatus { port: api::PORT, ..Default::default() }));
+        let port = api::port();
+        let api_status = Arc::new(Mutex::new(ApiStatus { port, ..Default::default() }));
         if demo {
             if let Ok(mut s) = api_status.lock() {
                 s.error = Some("Demo mode: the local API server is disabled.".into());
@@ -151,18 +174,25 @@ impl App {
                 notify: notify.clone(),
                 status: api_status.clone(),
             });
-            let result = api::start(backend, api::PORT);
+            let result = api::start(backend, port);
             if let Ok(mut s) = api_status.lock() {
                 match result {
                     Ok(()) => s.listening = true,
                     Err(e) => {
                         s.error = Some(format!(
-                            "Port {} is already in use or blocked ({e}). Downloads still work, but browser extensions can't reach the app.",
-                            api::PORT
+                            "Port {port} is already in use or blocked ({e}). Downloads still work, but browser extensions can't reach the app."
                         ))
                     }
                 }
             }
+        }
+
+        // Updates (and, with the installer layout, the browser extensions).
+        let mut updater = Updater::new(updater_config());
+        let ext_notices = crate::ext_update::Notices::default();
+        if !demo {
+            updater.on_check(crate::ext_update::hook(ext_notices.clone()));
+            updater.start(&cc.egui_ctx);
         }
 
         let clipboard_enabled = Arc::new(AtomicBool::new(settings.clipboard_monitor && !demo));
@@ -193,6 +223,7 @@ impl App {
             focus: None,
             new_dl: None,
             pending_asks: VecDeque::new(),
+            pending_batches: VecDeque::new(),
             batch: None,
             confirm_delete: None,
             delete_files: false,
@@ -203,7 +234,24 @@ impl App {
             folder_pick: None,
             toasts: Toasts::default(),
             actions: Vec::new(),
+            updater,
+            ext_notices,
+            restart_when_ready: !demo && std::env::var("ZENLESS_UPDATE_TEST_RESTART").is_ok_and(|v| v == "1"),
         };
+        if let Some(from) = &cli.updated_from {
+            let notes = app.updater.config().release_page(zenless_dm::VERSION);
+            app.toasts.push(
+                ToastKind::Success,
+                format!("Updated to v{}", zenless_dm::VERSION),
+                format!("From version {from}"),
+                vec![("What's new".into(), ToastAction::OpenUrl(notes))],
+            );
+        }
+        // Downloads that were running when "Restart now" was clicked go on,
+        // even with "Resume unfinished downloads" off.
+        if !cli.resume.is_empty() && !demo {
+            app.engine.send(Command::Resume(cli.resume.clone()));
+        }
         match cli.urls.len() {
             0 => {}
             1 => app.pending_asks.push_back(DownloadRequest {
@@ -236,11 +284,12 @@ impl App {
             "settings-network" => tab(settings_view::Tab::Network),
             "settings-browser" => tab(settings_view::Tab::Browser),
             "settings-appearance" => tab(settings_view::Tab::Appearance),
-            "settings-about" => tab(settings_view::Tab::About),
+            "settings-about" | "settings-updates" => tab(settings_view::Tab::About),
             _ => (false, settings_view::Tab::General),
         };
         self.settings_open = open_settings;
         self.settings_tab = tab;
+        self.demo_update_status(&view);
         match view.as_str() {
             "new" => {
                 let req = DownloadRequest {
@@ -277,6 +326,73 @@ impl App {
             }
             "delete" => self.confirm_delete = Some(self.selected_ids()),
             _ => {}
+        }
+    }
+
+    /// Demo mode: `ZENLESS_DEMO_VIEW=update-available|update-downloading|
+    /// update-ready|update-failed|settings-updates` shows a made-up update.
+    fn demo_update_status(&mut self, view: &str) {
+        let release = ReleaseInfo {
+            version: "0.3.0".into(),
+            tag: "v0.3.0".into(),
+            notes: "## What's new\n* Faster start on big download lists\n* Per-site connection limits\n* Fixes for servers \
+                    that send the wrong file size"
+                .into(),
+            html_url: self.updater.config().release_page("0.3.0"),
+            asset_url: "https://github.com/zenless-inc/zenless-download-manager/releases/download/v0.3.0/zenless-dm.exe".into(),
+            asset_size: 9_864_704,
+            sha256: Some("0".repeat(64)),
+            published_at: "2026-10-01T12:00:00Z".into(),
+        };
+        let path = zenless_dm::settings::data_dir().join("updates").join("zenless-dm-0.3.0.exe");
+        let status = match view {
+            "update-available" => UpdateStatus::Available(release),
+            "update-downloading" => UpdateStatus::Downloading { release, received: 6_372_311, total: 9_864_704 },
+            "update-ready" | "settings-updates" => UpdateStatus::Ready { release, path },
+            "update-failed" => UpdateStatus::Failed {
+                message: format!(
+                    "Zenless can't replace itself in {} (access denied). Download the new version from the website instead.",
+                    r"C:\Program Files\Zenless\Download Manager"
+                ),
+                release: Some(release),
+            },
+            _ => return,
+        };
+        self.updater.set_status_for_demo(status);
+    }
+
+    /// "Restart now": installs the ready update and restarts into it. The
+    /// downloads running now are passed on with `--resume` so the new
+    /// version continues them.
+    fn restart_for_update(&mut self, ctx: &egui::Context) {
+        if self.demo {
+            self.toasts.push(ToastKind::Info, "Demo mode", "Updates aren't installed in demo mode.", vec![]);
+            return;
+        }
+        let running: Vec<String> =
+            self.snap.downloads.iter().filter(|d| d.status.is_active()).map(|d| d.id.to_string()).collect();
+        let mut args = Vec::new();
+        if !running.is_empty() {
+            args.push("--resume".to_owned());
+            args.push(running.join(","));
+        }
+        if ctx.input(|i| i.viewport().minimized == Some(true)) {
+            args.push("--minimized".to_owned());
+        }
+        match self.updater.install_and_restart(&args) {
+            Ok(()) => {
+                self.restart_when_ready = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(e) => self.toasts.push(ToastKind::Error, "Couldn't install the update", e, vec![]),
+        }
+    }
+
+    /// Toasts for extensions the updater refreshed in the background.
+    fn drain_update_notices(&mut self) {
+        let notices = std::mem::take(&mut *self.ext_notices.lock().unwrap_or_else(|e| e.into_inner()));
+        for (title, body) in notices {
+            self.toasts.push(ToastKind::Success, title, body, vec![]);
         }
     }
 
@@ -475,6 +591,9 @@ impl App {
                 self.settings.default_connections,
             ));
             self.bring_to_front(ctx);
+        } else if let Some(req) = self.pending_batches.pop_front() {
+            self.batch = Some(BatchDialog::from_request(&req, self.settings.download_dir.clone()));
+            self.bring_to_front(ctx);
         }
     }
 
@@ -525,8 +644,9 @@ impl App {
                     self.bring_to_front(ctx);
                 }
                 UiEvent::Batch(req) => {
-                    self.batch = Some(BatchDialog::from_request(&req, self.settings.download_dir.clone()));
-                    self.new_dl = None;
+                    // Wait for the open dialog instead of replacing it, so a
+                    // download the user hasn't confirmed yet isn't lost.
+                    self.pending_batches.push_back(req);
                     self.bring_to_front(ctx);
                 }
                 UiEvent::Focus => self.bring_to_front(ctx),
@@ -752,6 +872,7 @@ impl App {
                     }
                 }
                 ToastAction::CopyText(t) => ctx.copy_text(t),
+                ToastAction::OpenUrl(u) => ctx.open_url(egui::OpenUrl::new_tab(u)),
             }
         }
     }
@@ -794,6 +915,10 @@ impl eframe::App for App {
         self.snap = self.engine.snapshot();
         self.drain_events(ctx);
         self.open_pending_ask(ctx);
+        self.drain_update_notices();
+        if self.restart_when_ready && matches!(self.updater.status(), UpdateStatus::Ready { .. }) {
+            self.restart_for_update(ctx);
+        }
         if self.frame_no == 0 && self.start_minimized && !self.shot.is_active() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
@@ -815,6 +940,17 @@ impl eframe::App for App {
             .exact_size(62.0)
             .frame(egui::Frame::new().fill(p.surface).inner_margin(bar_margin))
             .show(ui, |ui| self.toolbar(ui, &p));
+        if self.updater.banner_visible() {
+            let action = egui::Panel::top("update_banner")
+                .exact_size(Updater::BANNER_HEIGHT)
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| self.updater.banner_ui(ui, &p))
+                .inner;
+            if action == Some(UpdateAction::RestartNow) {
+                self.restart_for_update(&ctx);
+            }
+        }
         egui::Panel::bottom("statusbar")
             .exact_size(30.0)
             .frame(egui::Frame::new().fill(p.surface).inner_margin(egui::Margin::symmetric(12, 2)))
@@ -860,5 +996,10 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.sync_settings();
         self.engine.shutdown(Duration::from_secs(5));
+        // State is saved: a downloaded update can replace the exe now, so
+        // the next start runs the new version.
+        if !self.demo {
+            self.updater.install_on_exit();
+        }
     }
 }

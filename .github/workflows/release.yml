@@ -22,13 +22,20 @@ jobs:
         run: cargo test --locked
       - name: Build release
         run: cargo build --release --locked
-      - name: Prepare asset
+      - name: Prepare assets
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/zenless-dm.exe dist/zenless-dm.exe
+          # sha256sum-style checksum: the updater falls back to it when the
+          # release asset has no GitHub `digest`.
+          $hash = (Get-FileHash dist/zenless-dm.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$PWD/dist/zenless-dm.exe.sha256", "$hash  zenless-dm.exe`n")
+          Get-Content dist/zenless-dm.exe.sha256
       - name: Upload to GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/zenless-dm.exe
+          files: |
+            dist/zenless-dm.exe
+            dist/zenless-dm.exe.sha256
           generate_release_notes: true

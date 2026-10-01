@@ -4,7 +4,7 @@ A fast, good-looking, IDM-style download manager for Windows, written in Rust wi
 [egui](https://github.com/emilk/egui). Part of the **Zenless** suite
 ([website](https://zenless-suite.vercel.app) · [downloads](https://zenless-suite.vercel.app/download)).
 
-`zenless-dm.exe` · version 0.1.0 · MIT license
+`zenless-dm.exe` · version 0.2.0 · MIT license
 
 ## Features
 
@@ -49,6 +49,42 @@ A fast, good-looking, IDM-style download manager for Windows, written in Rust wi
 - Toasts for finished/failed downloads (and a taskbar flash when the window is in the background),
   drag & drop of links / `.url` files, single-instance with argument forwarding, `--minimized`,
   "Start with Windows".
+- **Automatic updates** of the app itself and of the browser extensions installed next to it
+  (see [Updates](#updates)).
+
+## Updates
+
+The app updates itself from its [GitHub releases](https://github.com/zenless-inc/zenless-download-manager/releases):
+
+- About 15 seconds after start (when the last check is more than 6 hours old) and then every
+  6 hours, it asks `GET https://api.github.com/repos/zenless-inc/zenless-download-manager/releases/latest`.
+  *Settings › About › Updates* shows the installed version, the status and when it last
+  checked, and has **Check for updates** plus two switches: *Check for updates automatically*
+  and *Download updates in the background and install them when I close the app* (both on by
+  default).
+- A newer release shows a slim banner under the toolbar: **Update now** · **What's new** ·
+  **Later** (hide until the next start) · **Skip this version**. While it downloads, the
+  banner shows progress; once it is ready: **Restart now** · **Later** (it installs
+  automatically when you close the app).
+- The download (`zenless-dm.exe` from the release) is only used when its size, its SHA-256
+  (GitHub's asset `digest`, or the `zenless-dm.exe.sha256` file attached to the release) and
+  its `MZ` header match. A release without a checksum is refused.
+- Installing renames the running `zenless-dm.exe` to `zenless-dm.exe.old` (Windows allows
+  that), copies the verified file into its place and either restarts right away or lets the
+  next start run the new version; the next start deletes the `.old` file. "Restart now"
+  passes the running downloads on, so they continue in the new version even with
+  *Resume unfinished downloads* off, and the new version says "Updated to vX" with a
+  *What's new* link. If the folder isn't writable, the banner offers *Download from website*.
+- **Browser extensions:** when Zenless Setup's layout is next to the app
+  (`..\Browser Extensions\Chrome\manifest.json` and/or `..\Browser Extensions\zenless-firefox-extension.xpi`),
+  every update check also looks at the latest
+  [Chrome](https://github.com/zenless-inc/zenless-chrome-extension/releases) and
+  [Firefox](https://github.com/zenless-inc/zenless-firefox-extension/releases) extension releases.
+  A newer, checksum-verified package replaces the unpacked `Chrome` folder (unpacked to
+  `Chrome.new`, then swapped; files are overwritten in place if the folder is in use) or the
+  `.xpi` (atomically), and a small toast says "Browser extension updated to vX". `GET /ping`
+  reports the versions on disk in `extensions`.
+- What the updater did is logged to `%APPDATA%\Zenless\DownloadManager\updates\updater.log`.
 
 ## Keyboard shortcuts
 
@@ -72,13 +108,17 @@ zenless-dm.exe [--minimized] [URL...]
 The app is single-instance: a second launch forwards its URLs to the running instance
 (`POST /download` for one URL, `POST /batch` for several), focuses it and exits.
 
+After an update the previous version starts the new one with
+`--updated-from <old version> [--resume <id,id,…>]`; it first waits (at most 20 s) until the
+old instance stops answering `/ping`.
+
 ## Local API (browser extensions)
 
 Plain HTTP/1.1 + JSON on **`127.0.0.1:6812`** only.
 
 | Method | Path | Body / answer |
 |---|---|---|
-| `GET` | `/ping` | `{"ok":true,"app":"zenless-dm","name":"Zenless Download Manager","version":"0.1.0"}` |
+| `GET` | `/ping` | `{"ok":true,"app":"zenless-dm","name":"Zenless Download Manager","version":"0.2.0","extensions":{"chrome":"0.2.0","firefox":"0.2.0"}}` — `extensions` lists the versions installed next to the app (missing ones are left out) |
 | `GET` | `/status` | counts, total speed and up to 8 recent unfinished items |
 | `POST` | `/download` | `{"url", "filename"?, "referrer"?, "cookies"?, "user_agent"?, "headers"?, "size"?, "mime"?, "page_title"?, "source"?, "mode": "ask"｜"start"｜"queue"}` → `{"ok":true,"id"?}` |
 | `POST` | `/batch` | `{"items":[{"url","filename"?}], "referrer"?, "cookies"?, "user_agent"?, "page_title"?, "source"?}` → batch dialog, `{"ok":true,"count":N}` |
@@ -112,6 +152,7 @@ curl -s -X POST http://127.0.0.1:6812/download \
 |---|---|
 | Settings, download list | `%APPDATA%\Zenless\DownloadManager\settings.json`, `downloads.json` |
 | Theme (shared by all Zenless apps) | `%APPDATA%\Zenless\appearance.json`, `themes\*.json` |
+| Updates | `%APPDATA%\Zenless\DownloadManager\updater.json` (switches, skipped version, last check), `updates\` (downloads, `updater.log`) |
 | Default save folder | your *Downloads* folder |
 | Autostart | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → `ZenlessDownloadManager` |
 
@@ -149,8 +190,17 @@ When `zig` is on `PATH`, `build.rs` uses `zig rc` to compile the Windows resourc
 | Variable | Effect |
 |---|---|
 | `ZENLESS_DEMO=1` | Fills the list with realistic, animated **fake** downloads. No network, no API server, nothing is saved. |
-| `ZENLESS_DEMO_VIEW=…` | With demo mode: open `new`, `batch`, `properties`, `delete`, `settings`, `settings-network`, `settings-browser`, `settings-appearance`, `settings-about`, or show the `empty` state. |
+| `ZENLESS_DEMO_VIEW=…` | With demo mode: open `new`, `batch`, `properties`, `delete`, `settings`, `settings-network`, `settings-browser`, `settings-appearance`, `settings-about`, `settings-updates`, show the `empty` state, or a made-up update banner: `update-available`, `update-downloading`, `update-ready`, `update-failed`. |
 | `ZENLESS_SCREENSHOT=out.png` | Saves a screenshot after `ZENLESS_SCREENSHOT_FRAMES` (default 40) frames and exits. |
+| `ZENLESS_UPDATE_API=http://127.0.0.1:<port>` | Ask this server instead of `https://api.github.com` for releases (a local mock serving `/repos/<owner>/<repo>/releases/latest`). |
+| `ZENLESS_UPDATE_DELAY_SECS=<n>` | First automatic update check after *n* seconds (instead of 15), even if the last check was recent. |
+| `ZENLESS_UPDATE_TEST_RESTART=1` | Acts like a click on **Restart now** as soon as an update is ready (end-to-end tests). |
+| `ZENLESS_DM_DATA_DIR=<dir>` | Use this folder instead of `%APPDATA%\Zenless\DownloadManager` (tests that must not touch real data). |
+| `ZENLESS_DM_PORT=<port>` | Serve the local API on this port instead of 6812 (tests next to a running instance; the extensions only talk to 6812). |
+
+Testing an update end to end: run an older build with `ZENLESS_UPDATE_API` pointing at a mock
+that serves a release JSON (newer `tag_name`, an asset named `zenless-dm.exe` with a correct
+`digest` of `sha256:<hex>`), `ZENLESS_UPDATE_DELAY_SECS=2` and a separate `ZENLESS_DM_DATA_DIR`.
 
 ## Project layout
 
@@ -161,10 +211,12 @@ src/
   api.rs            local HTTP API + single-instance client
   filename.rs       Content-Disposition, sanitising, unique names
   category.rs       extension → category
+  extensions.rs     versions / replacement of the browser extensions next to the app
   settings.rs  clipboard.rs  autostart.rs  demo.rs  util.rs
   main.rs           entry point (CLI, single instance, window)
+  ext_update.rs     refreshes the browser extensions on every update check
   ui/               egui front-end (toolbar, sidebar, table, details, dialogs, settings, toasts)
-  shared/           Zenless theme + UI kit (shared verbatim by all Zenless apps)
+  shared/           Zenless theme, UI kit and self-updater (shared verbatim by all Zenless apps)
 tests/engine_download.rs   end-to-end tests against a local HTTP server
 ```
 

@@ -95,8 +95,12 @@ pub fn default_download_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// `%APPDATA%\Zenless\DownloadManager`.
+/// `%APPDATA%\Zenless\DownloadManager` (`ZENLESS_DM_DATA_DIR` overrides it,
+/// for tests that must not touch the real data).
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("ZENLESS_DM_DATA_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Zenless")

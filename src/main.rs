@@ -7,16 +7,28 @@
 //! URLs are forwarded to it (`POST /download` / `/batch`), it is focused and
 //! this process exits.
 //!
+//! After a self-update the previous version starts the new one with
+//! `--updated-from <old version> [--resume <id,id,…>]`: it waits until the
+//! old instance has exited, says "Updated to vX" and resumes the downloads
+//! that were running.
+//!
 //! Environment (debug aids, all harmless):
 //! * `ZENLESS_DEMO=1` – fake, animated sample downloads; no network, no API
 //!   server, nothing is saved. `ZENLESS_DEMO_VIEW=new|batch|properties|delete|
-//!   settings[-network|-browser|-appearance|-about]|empty` opens that screen.
+//!   settings[-network|-browser|-appearance|-about|-updates]|empty|
+//!   update-available|update-downloading|update-ready|update-failed` opens that screen.
 //! * `ZENLESS_SCREENSHOT=<file.png>` – save a screenshot after a few frames and exit.
+//! * `ZENLESS_UPDATE_API=<url>` / `ZENLESS_UPDATE_DELAY_SECS=<n>` – update
+//!   server (a mock of the GitHub API) and delay of the first automatic check.
+//! * `ZENLESS_UPDATE_TEST_RESTART=1` – "Restart now" as soon as an update is ready.
+//! * `ZENLESS_DM_DATA_DIR=<dir>` / `ZENLESS_DM_PORT=<port>` – separate data
+//!   folder and API port (tests next to a real instance).
 
 // The shared UI kit is copied verbatim into every Zenless app; not every
 // helper is used here.
 #[allow(dead_code)]
 mod shared;
+mod ext_update;
 mod ui;
 
 use eframe::egui;
@@ -29,13 +41,25 @@ use zenless_dm::{api, engine, settings};
 pub struct Cli {
     pub minimized: bool,
     pub urls: Vec<String>,
+    /// `--updated-from <version>`: started by the previous version after an update.
+    pub updated_from: Option<String>,
+    /// `--resume <id,id,…>`: downloads to continue (they ran before the update).
+    pub resume: Vec<u64>,
 }
 
 fn parse_cli() -> Cli {
     let mut cli = Cli::default();
-    for arg in std::env::args().skip(1) {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--minimized" | "-m" | "/minimized" => cli.minimized = true,
+            "--updated-from" => cli.updated_from = args.next().filter(|v| !v.trim().is_empty()),
+            "--resume" => {
+                cli.resume = args
+                    .next()
+                    .map(|ids| ids.split(',').filter_map(|id| id.trim().parse().ok()).collect())
+                    .unwrap_or_default()
+            }
             a if zenless_dm::util::looks_like_url(a) => cli.urls.push(a.trim().to_owned()),
             _ => {}
         }
@@ -46,7 +70,8 @@ fn parse_cli() -> Cli {
 /// Hands our arguments to the running instance. Returns `true` on success.
 fn forward_to_running_instance(cli: &Cli) -> bool {
     let t = Duration::from_millis(1500);
-    let post = |path: &str, body: String| api::client_request(api::PORT, "POST", path, Some(&body), t);
+    let port = api::port();
+    let post = |path: &str, body: String| api::client_request(port, "POST", path, Some(&body), t);
     match cli.urls.len() {
         0 => {}
         1 => {
@@ -81,8 +106,14 @@ fn main() -> eframe::Result {
     let cli = parse_cli();
     let demo = std::env::var("ZENLESS_DEMO").is_ok_and(|v| v == "1");
     let screenshot = std::env::var_os("ZENLESS_SCREENSHOT").is_some();
+    let port = api::port();
 
-    if !demo && !screenshot && api::ping_existing(api::PORT, Duration::from_millis(300)) && forward_to_running_instance(&cli) {
+    // Started by the previous version after an update: let it finish exiting
+    // first, or the single-instance check would hand everything back to it.
+    if cli.updated_from.is_some() && !demo && !screenshot {
+        shared::updater::wait_for_previous_instance(port);
+    }
+    if !demo && !screenshot && api::ping_existing(port, Duration::from_millis(300)) && forward_to_running_instance(&cli) {
         return Ok(());
     }
 

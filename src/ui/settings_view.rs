@@ -4,6 +4,7 @@ use super::widgets::{dot, relative_time};
 use super::{App, FolderTarget};
 use crate::shared::kit;
 use crate::shared::theme::{Palette, mix};
+use crate::shared::updater::UpdateAction;
 use eframe::egui::{self, CornerRadius, FontId, RichText, Sense, Stroke, vec2};
 use egui_phosphor::regular as icons;
 use std::path::PathBuf;
@@ -344,6 +345,12 @@ impl App {
             ui.hyperlink_to(format!("{}  Source code", icons::ARROW_SQUARE_OUT), zenless_dm::REPOSITORY);
         });
         ui.add_space(12.0);
+        section(ui, p, "Updates");
+        if self.updater.settings_ui(ui, p) == Some(UpdateAction::RestartNow) {
+            let ctx = ui.ctx().clone();
+            self.restart_for_update(&ctx);
+        }
+        ui.add_space(12.0);
         section(ui, p, "Keyboard shortcuts");
         egui::Grid::new("shortcuts").num_columns(2).spacing([24.0, 5.0]).striped(true).show(ui, |ui| {
             for (k, v) in [
@@ -364,10 +371,13 @@ impl App {
         section(ui, p, "Data");
         let dir = zenless_dm::settings::data_dir();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(dir.display().to_string()).monospace().size(12.0).color(p.text_dim));
             if ui.small_button("Open").clicked() {
                 self.open_path(&dir);
             }
+            // Truncated: a long path must not widen the whole dialog.
+            let path = dir.display().to_string();
+            ui.add(egui::Label::new(RichText::new(&path).monospace().size(12.0).color(p.text_dim)).truncate())
+                .on_hover_text(path);
         });
     }
 }
