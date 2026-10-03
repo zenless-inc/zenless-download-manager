@@ -4,7 +4,7 @@ A fast, good-looking, IDM-style download manager for Windows, written in Rust wi
 [egui](https://github.com/emilk/egui). Part of the **Zenless** suite
 ([website](https://zenless-suite.vercel.app) · [downloads](https://zenless-suite.vercel.app/download)).
 
-`zenless-dm.exe` · version 0.2.1 · MIT license
+`zenless-dm.exe` · version 0.2.2 · MIT license
 
 ## Features
 
@@ -48,7 +48,7 @@ A fast, good-looking, IDM-style download manager for Windows, written in Rust wi
   per-connection list and a 60-second speed graph.
 - "New download" dialog with a debounced live probe (size + resumable), folder picker, category
   and connection count; batch dialog with extension filters for many links at once.
-- Settings: General, Network, Browser integration, Appearance (13 built-in themes shared by all
+- Settings: General, Network, Browser integration, Appearance (34 built-in themes shared by all
   Zenless apps + custom themes), About.
 - Toasts for finished/failed downloads (and a taskbar flash when the window is in the background),
   drag & drop of links / `.url` files, single-instance with argument forwarding, `--minimized`,
@@ -122,7 +122,7 @@ Plain HTTP/1.1 + JSON on **`127.0.0.1:6812`** only.
 
 | Method | Path | Body / answer |
 |---|---|---|
-| `GET` | `/ping` | `{"ok":true,"app":"zenless-dm","name":"Zenless Download Manager","version":"0.2.1","extensions":{"chrome":"0.2.0","firefox":"0.2.0"}}` — `extensions` lists the versions installed next to the app (missing ones are left out) |
+| `GET` | `/ping` | `{"ok":true,"app":"zenless-dm","name":"Zenless Download Manager","version":"0.2.2","extensions":{"chrome":"0.2.0","firefox":"0.2.0"}}` — `extensions` lists the versions installed next to the app (missing ones are left out) |
 | `GET` | `/status` | counts, total speed and up to 8 recent unfinished items |
 | `POST` | `/download` | `{"url", "filename"?, "referrer"?, "cookies"?, "user_agent"?, "headers"?, "size"?, "mime"?, "page_title"?, "source"?, "mode": "ask"｜"start"｜"queue"}` → `{"ok":true,"id"?}` |
 | `POST` | `/batch` | `{"items":[{"url","filename"?}], "referrer"?, "cookies"?, "user_agent"?, "page_title"?, "source"?}` → batch dialog, `{"ok":true,"count":N}` |
