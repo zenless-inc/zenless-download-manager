@@ -166,6 +166,9 @@ pub struct Download {
     pub category: Category,
     pub category_locked: bool,
     pub connections: u32,
+    /// The connection count came from the defaults (not picked by hand), so the
+    /// small-file rule may lower it once the size is known.
+    pub connections_auto: bool,
     /// Per-download limit in bytes/s.
     pub speed_limit: Option<u64>,
     pub segments: Vec<Segment>,
@@ -199,6 +202,7 @@ impl Default for Download {
             category: Category::Other,
             category_locked: false,
             connections: 8,
+            connections_auto: false,
             speed_limit: None,
             segments: Vec::new(),
             added_at: 0,

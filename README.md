@@ -4,7 +4,7 @@ A fast, good-looking, IDM-style download manager for Windows, written in Rust wi
 [egui](https://github.com/emilk/egui). Part of the **Zenless** suite
 ([website](https://zenless-suite.vercel.app) · [downloads](https://zenless-suite.vercel.app/download)).
 
-`zenless-dm.exe` · version 0.2.0 · MIT license
+`zenless-dm.exe` · version 0.2.1 · MIT license
 
 ## Features
 
@@ -14,6 +14,10 @@ A fast, good-looking, IDM-style download manager for Windows, written in Rust wi
   starts with *N* connections (default 8, 1–32). Whenever a connection finishes its segment, the
   largest remaining segment is split in half (if more than 1 MiB is left) and the free connection
   takes the second half, so fast connections keep working until the very end.
+- **Fewer connections for small files.** Files up to 100 MB use 2 connections instead of the
+  default, because many sites rate-limit or block clients that open lots of connections for one
+  small file. It only applies when you haven't picked the number yourself, and the size and count
+  are adjustable (or the rule can be turned off) in Settings → General.
 - Positional writes into a pre-allocated `<name>.zdm` file in the target folder; renamed on
   completion. Existing files are never overwritten (`name (1).ext`).
 - Smart probing (`GET` + `Range: bytes=0-`, redirects followed): size, resume support, file name
@@ -118,7 +122,7 @@ Plain HTTP/1.1 + JSON on **`127.0.0.1:6812`** only.
 
 | Method | Path | Body / answer |
 |---|---|---|
-| `GET` | `/ping` | `{"ok":true,"app":"zenless-dm","name":"Zenless Download Manager","version":"0.2.0","extensions":{"chrome":"0.2.0","firefox":"0.2.0"}}` — `extensions` lists the versions installed next to the app (missing ones are left out) |
+| `GET` | `/ping` | `{"ok":true,"app":"zenless-dm","name":"Zenless Download Manager","version":"0.2.1","extensions":{"chrome":"0.2.0","firefox":"0.2.0"}}` — `extensions` lists the versions installed next to the app (missing ones are left out) |
 | `GET` | `/status` | counts, total speed and up to 8 recent unfinished items |
 | `POST` | `/download` | `{"url", "filename"?, "referrer"?, "cookies"?, "user_agent"?, "headers"?, "size"?, "mime"?, "page_title"?, "source"?, "mode": "ask"｜"start"｜"queue"}` → `{"ok":true,"id"?}` |
 | `POST` | `/batch` | `{"items":[{"url","filename"?}], "referrer"?, "cookies"?, "user_agent"?, "page_title"?, "source"?}` → batch dialog, `{"ok":true,"count":N}` |

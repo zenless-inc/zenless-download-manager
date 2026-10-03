@@ -463,6 +463,8 @@ impl Actor {
             Command::SetConnections(id, n) => {
                 if let Some(d) = self.find(id) {
                     d.connections = n.clamp(crate::settings::MIN_CONNECTIONS, crate::settings::MAX_CONNECTIONS);
+                    // Picked by hand: the small-file rule no longer applies.
+                    d.connections_auto = false;
                 }
             }
             Command::Hash(id) => self.hash(id),
@@ -511,6 +513,7 @@ impl Actor {
                 .connections
                 .unwrap_or(self.settings.default_connections)
                 .clamp(crate::settings::MIN_CONNECTIONS, crate::settings::MAX_CONNECTIONS),
+            connections_auto: new.connections.is_none(),
             total_size: new.size_hint.filter(|&s| s > 0),
             status,
             added_at: crate::util::unix_now(),
@@ -749,6 +752,7 @@ impl Actor {
             resumable: d.resumable,
             segments: d.segments.clone(),
             connections,
+            small_file: if d.connections_auto { settings.small_file_policy() } else { None },
             max_retries: settings.max_retries,
             timeout: Duration::from_secs(settings.timeout_secs),
         };
@@ -820,6 +824,7 @@ impl Actor {
             d.category = meta.category;
             d.total_size = meta.total_size;
             d.resumable = Some(meta.resumable);
+            d.connections = meta.connections;
             d.final_url = Some(meta.final_url).filter(|u| *u != d.url);
             if meta.mime.is_some() {
                 d.mime = meta.mime;

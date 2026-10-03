@@ -21,6 +21,13 @@ pub struct Settings {
     pub max_concurrent: u32,
     /// Connections per new download (1–32).
     pub default_connections: u32,
+    /// Use fewer connections for small files: many sites rate-limit or block
+    /// clients that open lots of connections for one small download.
+    pub small_file_limit: bool,
+    /// Files up to this size (MiB) count as small.
+    pub small_file_mb: u64,
+    /// Connections for a small file (when you didn't pick a number yourself).
+    pub small_file_connections: u32,
     /// Mirrors the HKCU Run key (the registry is the source of truth).
     pub start_with_windows: bool,
     /// Resume downloads that were running when the app was closed.
@@ -48,6 +55,9 @@ impl Default for Settings {
             category_subfolders: false,
             max_concurrent: 3,
             default_connections: 8,
+            small_file_limit: true,
+            small_file_mb: 100,
+            small_file_connections: 2,
             start_with_windows: false,
             auto_resume: false,
             confirm_delete: true,
@@ -67,6 +77,8 @@ impl Settings {
     pub fn normalized(mut self) -> Self {
         self.max_concurrent = self.max_concurrent.clamp(1, 16);
         self.default_connections = self.default_connections.clamp(MIN_CONNECTIONS, MAX_CONNECTIONS);
+        self.small_file_mb = self.small_file_mb.clamp(1, 100_000);
+        self.small_file_connections = self.small_file_connections.clamp(MIN_CONNECTIONS, MAX_CONNECTIONS);
         self.max_retries = self.max_retries.min(50);
         self.timeout_secs = self.timeout_secs.clamp(5, 300);
         self.speed_limit_kib = self.speed_limit_kib.clamp(16, 10 * 1024 * 1024);
@@ -77,6 +89,15 @@ impl Settings {
             self.download_dir = default_download_dir();
         }
         self
+    }
+
+    /// The small-file rule for downloads whose connection count wasn't chosen
+    /// by hand, or `None` when it's turned off.
+    pub fn small_file_policy(&self) -> Option<crate::engine::segments::SmallFilePolicy> {
+        self.small_file_limit.then(|| crate::engine::segments::SmallFilePolicy {
+            max_bytes: self.small_file_mb.saturating_mul(1024 * 1024),
+            connections: self.small_file_connections,
+        })
     }
 
     /// Effective global limit in bytes per second (`0` = unlimited).
@@ -124,5 +145,17 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"max_concurrent":5,"bogus":1}"#).unwrap();
         assert_eq!(s.max_concurrent, 5);
         assert_eq!(s.default_connections, 8);
+    }
+
+    #[test]
+    fn small_file_rule() {
+        // On by default (settings files from 0.2.0 don't have the keys yet): ≤ 100 MiB → 2 connections.
+        let s: Settings = serde_json::from_str(r#"{"default_connections":8}"#).unwrap();
+        let p = s.small_file_policy().expect("on by default");
+        assert_eq!(p.max_bytes, 100 * 1024 * 1024);
+        assert_eq!(p.connections, 2);
+        assert!(Settings { small_file_limit: false, ..Settings::default() }.small_file_policy().is_none());
+        let s = Settings { small_file_mb: 0, small_file_connections: 0, ..Settings::default() }.normalized();
+        assert_eq!((s.small_file_mb, s.small_file_connections), (1, 1));
     }
 }

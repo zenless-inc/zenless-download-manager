@@ -49,6 +49,15 @@ struct TestServer {
     /// `(start, end)` of every range request served.
     ranges: Arc<Mutex<Vec<(u64, u64)>>>,
     requests: Arc<AtomicUsize>,
+    /// Most partial (segment) transfers that were in flight at the same time.
+    peak_parallel: Arc<AtomicUsize>,
+}
+
+/// Counts partial-content transfers in flight (the probe's full range excluded).
+#[derive(Default)]
+struct Parallel {
+    now: AtomicUsize,
+    peak: Arc<AtomicUsize>,
 }
 
 struct SlowReader {
@@ -99,6 +108,8 @@ fn start_server(data: Arc<Vec<u8>>, opts: ServerOpts) -> TestServer {
     let port = server.server_addr().to_ip().expect("ip addr").port();
     let ranges = Arc::new(Mutex::new(Vec::new()));
     let requests = Arc::new(AtomicUsize::new(0));
+    let parallel = Arc::new(Parallel::default());
+    let peak_parallel = parallel.peak.clone();
     let opts = Arc::new(opts);
     {
         let ranges = ranges.clone();
@@ -108,15 +119,23 @@ fn start_server(data: Arc<Vec<u8>>, opts: ServerOpts) -> TestServer {
                 let data = data.clone();
                 let ranges = ranges.clone();
                 let opts = opts.clone();
+                let parallel = parallel.clone();
                 let n = requests.fetch_add(1, Ordering::SeqCst);
-                std::thread::spawn(move || serve(rq, data, &opts, &ranges, n));
+                std::thread::spawn(move || serve(rq, data, &opts, &ranges, &parallel, n));
             }
         });
     }
-    TestServer { base: format!("http://127.0.0.1:{port}"), ranges, requests }
+    TestServer { base: format!("http://127.0.0.1:{port}"), ranges, requests, peak_parallel }
 }
 
-fn serve(rq: tiny_http::Request, data: Arc<Vec<u8>>, opts: &ServerOpts, ranges: &Mutex<Vec<(u64, u64)>>, n: usize) {
+fn serve(
+    rq: tiny_http::Request,
+    data: Arc<Vec<u8>>,
+    opts: &ServerOpts,
+    ranges: &Mutex<Vec<(u64, u64)>>,
+    parallel: &Parallel,
+    n: usize,
+) {
     use tiny_http::{Header, Response, StatusCode};
     if n < opts.fail_first {
         let _ = rq.respond(Response::from_string("busy").with_status_code(503));
@@ -146,7 +165,15 @@ fn serve(rq: tiny_http::Request, data: Arc<Vec<u8>>, opts: &ServerOpts, ranges: 
     let reader = SlowReader { data, pos: start as usize, end: end as usize, delay };
     let len = if opts.mode == Mode::Chunked { None } else { Some((end - start) as usize) };
     let resp = Response::new(StatusCode(status), headers, reader, len, None);
+    let segment = status == 206 && end - start < total;
+    if segment {
+        let now = parallel.now.fetch_add(1, Ordering::SeqCst) + 1;
+        parallel.peak.fetch_max(now, Ordering::SeqCst);
+    }
     let _ = rq.respond(resp);
+    if segment {
+        parallel.now.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,13 +188,18 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 fn engine(dir: &Path) -> (Engine, Receiver<UiEvent>) {
+    engine_with(dir, |_| {})
+}
+
+fn engine_with(dir: &Path, tweak: impl FnOnce(&mut Settings)) -> (Engine, Receiver<UiEvent>) {
     let (tx, rx) = channel();
-    let settings = Settings {
+    let mut settings = Settings {
         download_dir: dir.to_path_buf(),
         max_retries: 4,
         timeout_secs: 10,
         ..Settings::default()
     };
+    tweak(&mut settings);
     let cfg = EngineConfig { settings, downloads: Vec::new(), data_dir: None, demo: false };
     (Engine::start(cfg, tx, Arc::new(|| {})).expect("engine"), rx)
 }
@@ -240,6 +272,41 @@ fn multi_connection_download_is_byte_identical() {
     assert_eq!(d.resumable, Some(true));
     assert_eq!(d.downloaded, data.len() as u64);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Downloads a 6 MiB file (each 64 KiB chunk slowed down so transfers
+/// overlap) and returns (peak parallel segment transfers, connections recorded).
+fn small_file_run(name: &str, connections: Option<u32>, tweak: impl FnOnce(&mut Settings)) -> (usize, u32) {
+    let data = payload(6 * 1024 * 1024 + 5);
+    let srv = start_server(data.clone(), ServerOpts { slow_all: Some(Duration::from_millis(4)), ..Default::default() });
+    let dir = temp_dir(name);
+    let (engine, rx) = engine_with(&dir, tweak);
+    let mut n = NewDownload::new(format!("{}/files/{name}.bin", srv.base), StartMode::Now);
+    n.connections = connections;
+    let id = engine.add(n);
+    let path = wait_finished(&rx, id, Duration::from_secs(120));
+    assert!(std::fs::read(&path).unwrap() == *data, "content differs");
+    let connections = engine.snapshot().get(id).unwrap().connections;
+    let _ = std::fs::remove_dir_all(&dir);
+    (srv.peak_parallel.load(Ordering::SeqCst), connections)
+}
+
+#[test]
+fn small_files_use_two_connections_by_default() {
+    // Default settings: ≤ 100 MB and no hand-picked count → at most 2 connections.
+    let (peak, connections) = small_file_run("small-auto", None, |_| {});
+    assert!(peak <= 2, "expected at most 2 parallel transfers, saw {peak}");
+    assert_eq!(connections, 2, "the download should record the 2 connections it used");
+
+    // A hand-picked count wins over the rule.
+    let (peak, connections) = small_file_run("small-picked", Some(8), |_| {});
+    assert!(peak > 2, "8 hand-picked connections should run in parallel, saw {peak}");
+    assert_eq!(connections, 8);
+
+    // Bigger than the threshold (lowered to 1 MB here) → the default 8.
+    let (peak, connections) = small_file_run("over-threshold", None, |s| s.small_file_mb = 1);
+    assert!(peak > 2, "a file over the threshold should use the default count, saw {peak}");
+    assert_eq!(connections, 8);
 }
 
 #[test]

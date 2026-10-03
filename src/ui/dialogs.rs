@@ -36,6 +36,9 @@ pub struct NewDownloadDialog {
     pub category: Category,
     pub category_edited: bool,
     pub connections: u32,
+    /// The user moved the connections slider (otherwise the defaults and the
+    /// small-file rule decide).
+    pub connections_edited: bool,
     pub request: RequestInfo,
     pub size_hint: Option<u64>,
     pub mime: Option<String>,
@@ -57,6 +60,7 @@ impl NewDownloadDialog {
             category: Category::Other,
             category_edited: false,
             connections,
+            connections_edited: false,
             request: RequestInfo::default(),
             size_hint: None,
             mime: None,
@@ -152,6 +156,24 @@ impl App {
         }
         let duplicate = self.snap.downloads.iter().any(|d| d.url == dlg.url.trim());
         let waiting = self.pending_asks.len() + self.pending_batches.len();
+        // Until the user moves the slider, show what the engine will use:
+        // the default, or fewer connections for a small file.
+        let known_size = match &dlg.probe {
+            ProbeState::Done(info) => info.total_size,
+            _ => None,
+        }
+        .or(dlg.size_hint);
+        let small_file = !dlg.connections_edited
+            && known_size.is_some_and(|s| {
+                self.settings.small_file_limit && s <= self.settings.small_file_mb.saturating_mul(1024 * 1024)
+            });
+        if !dlg.connections_edited {
+            dlg.connections = zenless_dm::engine::segments::effective_connections(
+                self.settings.default_connections,
+                known_size,
+                self.settings.small_file_policy(),
+            );
+        }
 
         let mut outcome = NewDownloadOutcome::Keep;
         let modal = egui::Modal::new(egui::Id::new("new_download")).show(ctx, |ui| {
@@ -240,8 +262,22 @@ impl App {
 
                     ui.label(RichText::new("Connections").color(p.text_dim));
                     ui.horizontal(|ui| {
-                        ui.add(egui::Slider::new(&mut dlg.connections, MIN_CONNECTIONS..=MAX_CONNECTIONS));
-                        ui.label(RichText::new("parallel connections").size(12.0).color(p.text_dim));
+                        if ui
+                            .add(egui::Slider::new(&mut dlg.connections, MIN_CONNECTIONS..=MAX_CONNECTIONS))
+                            .changed()
+                        {
+                            dlg.connections_edited = true;
+                        }
+                        if small_file {
+                            ui.label(RichText::new("small file: fewer connections").size(12.0).color(p.text_dim))
+                                .on_hover_text(format!(
+                                    "Files up to {} MB use {} connections, so sites don't mistake the download for a bot. \
+                                     Move the slider to choose yourself, or change this in Settings → General.",
+                                    self.settings.small_file_mb, self.settings.small_file_connections
+                                ));
+                        } else {
+                            ui.label(RichText::new("parallel connections").size(12.0).color(p.text_dim));
+                        }
                     });
                     ui.end_row();
                 });
@@ -372,7 +408,8 @@ impl App {
                     file_name: lock_name.then(|| name.to_owned()),
                     save_dir: Some(PathBuf::from(dlg.folder.trim())),
                     category: dlg.category_edited.then_some(dlg.category),
-                    connections: Some(dlg.connections),
+                    // `None` lets the engine apply the defaults and the small-file rule.
+                    connections: dlg.connections_edited.then_some(dlg.connections),
                     request: dlg.request.clone(),
                     start: mode,
                     size_hint: probed.as_ref().and_then(|p| p.total_size).or(dlg.size_hint),

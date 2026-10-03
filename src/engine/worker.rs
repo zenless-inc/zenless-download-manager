@@ -153,6 +153,8 @@ pub struct JobSpec {
     pub resumable: Option<bool>,
     pub segments: Vec<Segment>,
     pub connections: u32,
+    /// Fewer connections for small files (`None`: rule off or count picked by hand).
+    pub small_file: Option<segments::SmallFilePolicy>,
     pub max_retries: u32,
     pub timeout: Duration,
 }
@@ -169,6 +171,8 @@ pub struct JobMeta {
     pub mime: Option<String>,
     /// Existing progress could not be reused (size changed / no resume support).
     pub restarted: bool,
+    /// Connections actually used (after the small-file rule).
+    pub connections: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -316,6 +320,11 @@ async fn run_inner(ctx: &Arc<JobCtx>) -> Result<Outcome, JobError> {
     let probe = probe_with_retries(ctx).await?;
     let total = probe.total_size;
     let resumable = probe.resumable && total.is_some();
+    // Small files get fewer connections so servers don't take us for a bot.
+    let connections = segments::effective_connections(spec.connections, total, spec.small_file);
+    if let Ok(mut states) = ctx.shared.conn_state.lock() {
+        states.truncate(connections.max(1) as usize);
+    }
 
     // Can we continue the existing temp file?
     let old_temp = spec
@@ -384,6 +393,7 @@ async fn run_inner(ctx: &Arc<JobCtx>) -> Result<Outcome, JobError> {
             final_url: probe.final_url.clone(),
             mime: probe.mime.clone(),
             restarted,
+            connections,
         },
     });
 
@@ -394,13 +404,13 @@ async fn run_inner(ctx: &Arc<JobCtx>) -> Result<Outcome, JobError> {
             let segs = if can_continue {
                 spec.segments.clone()
             } else {
-                segments::initial_segments(t, spec.connections)
+                segments::initial_segments(t, connections)
             };
             if let Ok(mut slots) = ctx.shared.slots.lock() {
                 *slots = segs.into_iter().map(|seg| Slot { seg, active: false }).collect();
             }
             ctx.shared.phase.store(PHASE_DOWNLOADING, Ordering::SeqCst);
-            run_segmented(ctx, url, file.clone()).await?;
+            run_segmented(ctx, connections, url, file.clone()).await?;
             t
         }
         _ => {
@@ -434,9 +444,9 @@ async fn run_inner(ctx: &Arc<JobCtx>) -> Result<Outcome, JobError> {
 // Segmented (multi-connection) transfer
 // ---------------------------------------------------------------------------
 
-async fn run_segmented(ctx: &Arc<JobCtx>, url: Arc<str>, file: Arc<File>) -> Result<(), JobError> {
+async fn run_segmented(ctx: &Arc<JobCtx>, connections: u32, url: Arc<str>, file: Arc<File>) -> Result<(), JobError> {
     let mut set = JoinSet::new();
-    for conn in 0..ctx.spec.connections.max(1) as usize {
+    for conn in 0..connections.max(1) as usize {
         let (ctx, url, file) = (ctx.clone(), url.clone(), file.clone());
         set.spawn(async move { connection_loop(&ctx, conn, &url, &file).await });
     }

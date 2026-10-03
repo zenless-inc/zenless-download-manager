@@ -134,6 +134,21 @@ impl App {
             ui.add(egui::Slider::new(&mut self.settings.default_connections, MIN_CONNECTIONS..=MAX_CONNECTIONS));
             ui.end_row();
         });
+        ui.checkbox(&mut self.settings.small_file_limit, "Use fewer connections for small files")
+            .on_hover_text(
+                "Many sites rate-limit or block clients that open lots of connections for one small file. \
+                 Doesn't apply when you pick the number of connections yourself.",
+            );
+        ui.add_enabled_ui(self.settings.small_file_limit, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                ui.label("Files up to");
+                ui.add(egui::DragValue::new(&mut self.settings.small_file_mb).range(1..=100_000).suffix(" MB"));
+                ui.label("use");
+                ui.add(egui::DragValue::new(&mut self.settings.small_file_connections).range(MIN_CONNECTIONS..=MAX_CONNECTIONS));
+                ui.label(if self.settings.small_file_connections == 1 { "connection" } else { "connections" });
+            });
+        });
         ui.checkbox(&mut self.settings.auto_resume, "Resume unfinished downloads when the app starts");
         ui.checkbox(&mut self.settings.confirm_delete, "Ask before removing downloads");
         ui.checkbox(&mut self.settings.notifications, "Show a notification when a download finishes");

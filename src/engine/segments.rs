@@ -25,6 +25,28 @@ pub struct Slot {
     pub active: bool,
 }
 
+/// "Small files get fewer connections": many sites rate-limit or block
+/// clients that open lots of parallel connections for one small download,
+/// and for a small file the extra connections barely help anyway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SmallFilePolicy {
+    /// Files up to this many bytes count as small.
+    pub max_bytes: u64,
+    /// Most connections a small file gets.
+    pub connections: u32,
+}
+
+/// Connections to use for a file of `total` bytes. `policy` is `None` when the
+/// rule is off or the user picked the number by hand; an unknown size keeps
+/// `requested` (the worker decides again once the size is known).
+pub fn effective_connections(requested: u32, total: Option<u64>, policy: Option<SmallFilePolicy>) -> u32 {
+    let requested = requested.max(1);
+    match (total, policy) {
+        (Some(t), Some(p)) if t <= p.max_bytes => requested.min(p.connections.max(1)),
+        _ => requested,
+    }
+}
+
 /// Splits `[0, total)` into up to `connections` equal segments, each at
 /// least [`MIN_INITIAL_SEGMENT`] long (except when the file is smaller).
 pub fn initial_segments(total: u64, connections: u32) -> Vec<Segment> {
@@ -149,6 +171,22 @@ mod tests {
         assert_eq!(initial_segments(600 * 1024, 8).len(), 2);
         assert_eq!(initial_segments(0, 8), vec![Segment::new(0, 0)]);
         assert_eq!(initial_segments(10 * MIB, 0).len(), 1);
+    }
+
+    #[test]
+    fn small_file_policy_caps_connections() {
+        let p = Some(SmallFilePolicy { max_bytes: 100 * MIB, connections: 2 });
+        // ≤ 100 MiB → 2, bigger → as requested.
+        assert_eq!(effective_connections(8, Some(5 * MIB), p), 2);
+        assert_eq!(effective_connections(8, Some(100 * MIB), p), 2);
+        assert_eq!(effective_connections(8, Some(100 * MIB + 1), p), 8);
+        // Never raises a smaller request.
+        assert_eq!(effective_connections(1, Some(MIB), p), 1);
+        // Unknown size, rule off or hand-picked count: unchanged.
+        assert_eq!(effective_connections(8, None, p), 8);
+        assert_eq!(effective_connections(8, Some(MIB), None), 8);
+        // Degenerate values stay ≥ 1.
+        assert_eq!(effective_connections(0, Some(MIB), Some(SmallFilePolicy { max_bytes: MIB, connections: 0 })), 1);
     }
 
     #[test]
