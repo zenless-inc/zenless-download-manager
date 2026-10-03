@@ -4,6 +4,7 @@ use super::widgets::{dot, relative_time};
 use super::{App, FolderTarget};
 use crate::shared::kit;
 use crate::shared::theme::{Palette, mix};
+use crate::shared::tray;
 use crate::shared::updater::UpdateAction;
 use eframe::egui::{self, CornerRadius, FontId, RichText, Sense, Stroke, vec2};
 use egui_phosphor::regular as icons;
@@ -159,12 +160,33 @@ impl App {
         ui.add_space(10.0);
 
         section(ui, p, "System");
+        ui.add_enabled(
+            tray::supported(),
+            egui::Checkbox::new(&mut self.settings.tray_icon, "Show an icon in the system tray"),
+        )
+        .on_hover_text(
+            "Click the icon to show or hide the window. Right-click it to add a download, pause or resume \
+             everything, or quit.",
+        );
+        ui.add_enabled_ui(tray::supported() && self.settings.tray_icon, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                ui.checkbox(&mut self.settings.close_to_tray, "Keep running in the tray when the window is closed")
+                    .on_hover_text("Downloads continue in the background. Quit from the tray icon's menu.");
+            });
+        });
+        if let Some(e) = &self.tray_error {
+            let text = format!("{}  The tray icon couldn't be created: {e}", icons::WARNING_CIRCLE);
+            ui.label(RichText::new(text).color(p.danger));
+        }
         let mut autostart = self.settings.start_with_windows;
+        let autostart_label = if self.settings.tray_icon && tray::supported() {
+            "Start with Windows (in the tray)"
+        } else {
+            "Start with Windows (minimized)"
+        };
         if ui
-            .add_enabled(
-                cfg!(windows) && !self.demo,
-                egui::Checkbox::new(&mut autostart, "Start with Windows (minimized)"),
-            )
+            .add_enabled(cfg!(windows) && !self.demo, egui::Checkbox::new(&mut autostart, autostart_label))
             .changed()
         {
             match zenless_dm::autostart::set_enabled(autostart) {

@@ -1,6 +1,6 @@
 [package]
 name = "zenless-dm"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Zenless Download Manager - fast multi-connection downloads"
 license = "MIT"
@@ -33,6 +33,12 @@ arboard = { version = "3", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+# System tray icon (src/shared/tray.rs). The default features pull in the
+# Linux GTK/appindicator libraries, which Windows doesn't need.
+tray-icon = { version = "0.26", default-features = false }
+# The tray's one-time "still running" balloon (Shell_NotifyIconW), same
+# version tray-icon itself uses.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 opt-level = 3

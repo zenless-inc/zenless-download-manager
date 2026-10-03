@@ -5,6 +5,7 @@ mod details;
 mod dialogs;
 mod settings_view;
 mod sidebar;
+mod systray;
 mod table;
 mod toasts;
 mod toolbar;
@@ -13,6 +14,7 @@ mod widgets;
 use crate::Cli;
 use crate::shared::kit;
 use crate::shared::theme::{Palette, ThemeManager, alpha};
+use crate::shared::tray::{Tray, WindowState};
 use crate::shared::updater::{ReleaseInfo, Status as UpdateStatus, UpdateAction, Updater, UpdaterConfig};
 use dialogs::{BatchDialog, NewDownloadDialog};
 use eframe::egui::{self, vec2};
@@ -22,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use toasts::{ToastAction, ToastKind, Toasts};
 use zenless_dm::api::{self, ApiStatus, EngineBackend};
 use zenless_dm::category::Category;
@@ -138,6 +140,20 @@ pub struct App {
     /// `ZENLESS_UPDATE_TEST_RESTART=1`: restart as soon as an update is
     /// ready, exactly like "Restart now" (end-to-end tests).
     restart_when_ready: bool,
+
+    /// The system tray icon (see `systray.rs`); `None` when turned off.
+    tray: Option<Tray>,
+    /// No tray icon in screenshot mode (it would outlive the quick exit).
+    tray_allowed: bool,
+    /// Why the tray icon couldn't be created (shown in Settings).
+    tray_error: Option<String>,
+    tray_refreshed: Instant,
+    /// The first close to the tray happened: say so in the window once it's back.
+    tray_notice_pending: bool,
+    /// Shown / hidden in the tray.
+    win: WindowState,
+    /// Set by [`App::quit`]: the next close request really exits.
+    quitting: bool,
 }
 
 /// The updater settings for this app.
@@ -237,7 +253,17 @@ impl App {
             updater,
             ext_notices,
             restart_when_ready: !demo && std::env::var("ZENLESS_UPDATE_TEST_RESTART").is_ok_and(|v| v == "1"),
+            tray: None,
+            tray_allowed: std::env::var_os("ZENLESS_SCREENSHOT").is_none(),
+            tray_error: None,
+            tray_refreshed: Instant::now(),
+            tray_notice_pending: false,
+            win: WindowState::default(),
+            quitting: false,
         };
+        // The tray icon is created here, on the main thread, before the first
+        // frame (`--minimized` hides the window into it).
+        app.sync_tray(&cc.egui_ctx);
         if let Some(from) = &cli.updated_from {
             let notes = app.updater.config().release_page(zenless_dm::VERSION);
             app.toasts.push(
@@ -376,13 +402,14 @@ impl App {
             args.push("--resume".to_owned());
             args.push(running.join(","));
         }
-        if ctx.input(|i| i.viewport().minimized == Some(true)) {
+        if !self.win.on_screen(ctx) {
+            // Minimized or hidden in the tray: the new version starts the same way.
             args.push("--minimized".to_owned());
         }
         match self.updater.install_and_restart(&args) {
             Ok(()) => {
                 self.restart_when_ready = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.quit(ctx);
             }
             Err(e) => self.toasts.push(ToastKind::Error, "Couldn't install the update", e, vec![]),
         }
@@ -563,10 +590,9 @@ impl App {
         }
     }
 
-    fn bring_to_front(&self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    /// Shows the window (also out of the tray), restores and focuses it.
+    fn bring_to_front(&mut self, ctx: &egui::Context) {
+        self.win.show(ctx);
     }
 
     fn open_new_download(&mut self, url: Option<String>) {
@@ -620,6 +646,7 @@ impl App {
             match ev {
                 UiEvent::Finished { name, path, .. } => {
                     if self.settings.notifications {
+                        self.tray_notify_finished(&name);
                         self.toasts.push(
                             ToastKind::Success,
                             "Download complete",
@@ -629,7 +656,7 @@ impl App {
                                 ("Show in folder".into(), ToastAction::ShowInFolder(path)),
                             ],
                         );
-                        if !ctx.input(|i| i.focused) {
+                        if !ctx.input(|i| i.focused) && !self.win.is_hidden() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                                 egui::UserAttentionType::Informational,
                             ));
@@ -650,7 +677,7 @@ impl App {
                     self.bring_to_front(ctx);
                 }
                 UiEvent::Focus => self.bring_to_front(ctx),
-                UiEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                UiEvent::Quit => self.quit(ctx),
                 UiEvent::Probe { token, result } => {
                     if let Some(d) = &mut self.new_dl {
                         d.on_probe(token, result);
@@ -920,8 +947,17 @@ impl eframe::App for App {
             self.restart_for_update(ctx);
         }
         if self.frame_no == 0 && self.start_minimized && !self.shot.is_active() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            if self.tray.is_some() {
+                // `--minimized` (autostart) with the tray icon: start in the tray.
+                self.win.hide(ctx);
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
         }
+        self.tray_tick(ctx);
+        self.handle_close_request(ctx);
+        // Also here, so settings changed while the window is hidden get saved.
+        self.sync_settings();
         self.frame_no += 1;
     }
 
@@ -994,6 +1030,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Remove the tray icon right away, not after the engine has stopped.
+        self.tray = None;
         self.sync_settings();
         self.engine.shutdown(Duration::from_secs(5));
         // State is saved: a downloaded update can replace the exe now, so

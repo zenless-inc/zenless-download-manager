@@ -4,7 +4,7 @@ A fast, good-looking, IDM-style download manager for Windows, written in Rust wi
 [egui](https://github.com/emilk/egui). Part of the **Zenless** suite
 ([website](https://zenless-suite.vercel.app) · [downloads](https://zenless-suite.vercel.app/download)).
 
-`zenless-dm.exe` · version 0.2.2 · MIT license
+`zenless-dm.exe` · version 0.2.3 · MIT license
 
 ## Features
 
@@ -53,6 +53,8 @@ A fast, good-looking, IDM-style download manager for Windows, written in Rust wi
 - Toasts for finished/failed downloads (and a taskbar flash when the window is in the background),
   drag & drop of links / `.url` files, single-instance with argument forwarding, `--minimized`,
   "Start with Windows".
+- A **system tray icon** with live status; closing the window keeps the app running there
+  (see [System tray](#system-tray)).
 - **Automatic updates** of the app itself and of the browser extensions installed next to it
   (see [Updates](#updates)).
 
@@ -90,6 +92,31 @@ The app updates itself from its [GitHub releases](https://github.com/zenless-inc
   reports the versions on disk in `extensions`.
 - What the updater did is logged to `%APPDATA%\Zenless\DownloadManager\updates\updater.log`.
 
+## System tray
+
+While the app runs it shows an icon in the Windows notification area (Windows 11 may put new
+icons in the overflow menu behind the `^` arrow; drag it onto the taskbar to keep it visible).
+
+- **Tooltip** with the live status, refreshed every 2 seconds:
+  `Zenless Download Manager · 2 active · 5.3 MB/s`, or `… · idle`.
+- **Left click** shows the window (restored and focused) when it is hidden or minimized, and
+  hides it when it is on screen.
+- **Right-click menu:** *Show Zenless Download Manager* / *Hide*, *Add URL…* (opens the
+  "New download" dialog), *Pause all*, *Resume all* (the paused downloads), *Quit*.
+- **Closing the window** (title-bar X, Alt+F4) hides it to the tray while *Settings › General ›
+  Keep running in the tray when the window is closed* is on (the default). Downloads go on;
+  the first time, a Windows notification (and a note in the window once it's opened again)
+  says that the app is still running. *Quit* in the tray menu exits.
+- *Settings › General › Show an icon in the system tray* (on by default) removes the icon when
+  turned off; the close button then quits again.
+- `--minimized` (used by *Start with Windows*) starts hidden in the tray, or minimized to the
+  taskbar without the tray icon.
+- While the window is hidden, finished downloads are announced with a Windows notification
+  (when *Show a notification when a download finishes* is on).
+- Things that need the window bring it back from the tray: a link sent from the browser
+  (`mode: ask`), `POST /focus`, starting `zenless-dm.exe` again. `POST /quit`, *Quit* and
+  *Restart now* after an update always exit.
+
 ## Keyboard shortcuts
 
 | Keys | Action |
@@ -111,6 +138,7 @@ zenless-dm.exe [--minimized] [URL...]
 
 The app is single-instance: a second launch forwards its URLs to the running instance
 (`POST /download` for one URL, `POST /batch` for several), focuses it and exits.
+`--minimized` starts hidden in the tray (or minimized when the tray icon is turned off).
 
 After an update the previous version starts the new one with
 `--updated-from <old version> [--resume <id,id,…>]`; it first waits (at most 20 s) until the
@@ -122,7 +150,7 @@ Plain HTTP/1.1 + JSON on **`127.0.0.1:6812`** only.
 
 | Method | Path | Body / answer |
 |---|---|---|
-| `GET` | `/ping` | `{"ok":true,"app":"zenless-dm","name":"Zenless Download Manager","version":"0.2.2","extensions":{"chrome":"0.2.0","firefox":"0.2.0"}}` — `extensions` lists the versions installed next to the app (missing ones are left out) |
+| `GET` | `/ping` | `{"ok":true,"app":"zenless-dm","name":"Zenless Download Manager","version":"0.2.3","extensions":{"chrome":"0.2.0","firefox":"0.2.0"}}` — `extensions` lists the versions installed next to the app (missing ones are left out) |
 | `GET` | `/status` | counts, total speed and up to 8 recent unfinished items |
 | `POST` | `/download` | `{"url", "filename"?, "referrer"?, "cookies"?, "user_agent"?, "headers"?, "size"?, "mime"?, "page_title"?, "source"?, "mode": "ask"｜"start"｜"queue"}` → `{"ok":true,"id"?}` |
 | `POST` | `/batch` | `{"items":[{"url","filename"?}], "referrer"?, "cookies"?, "user_agent"?, "page_title"?, "source"?}` → batch dialog, `{"ok":true,"count":N}` |
@@ -219,8 +247,9 @@ src/
   settings.rs  clipboard.rs  autostart.rs  demo.rs  util.rs
   main.rs           entry point (CLI, single instance, window)
   ext_update.rs     refreshes the browser extensions on every update check
-  ui/               egui front-end (toolbar, sidebar, table, details, dialogs, settings, toasts)
-  shared/           Zenless theme, UI kit and self-updater (shared verbatim by all Zenless apps)
+  ui/               egui front-end (toolbar, sidebar, table, details, dialogs, settings, toasts,
+                    systray.rs: tray menu/tooltip and the close button)
+  shared/           Zenless theme, UI kit, self-updater and tray icon (shared verbatim by all Zenless apps)
 tests/engine_download.rs   end-to-end tests against a local HTTP server
 ```
 

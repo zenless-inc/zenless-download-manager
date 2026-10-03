@@ -37,6 +37,13 @@ pub struct Settings {
     pub clipboard_monitor: bool,
     /// Toasts + taskbar flash when downloads finish.
     pub notifications: bool,
+    /// Show an icon in the system tray (Windows).
+    pub tray_icon: bool,
+    /// Closing the window hides it to the tray instead of quitting. Only
+    /// applies while the tray icon is shown.
+    pub close_to_tray: bool,
+    /// The one-time "still running in the tray" notice was shown.
+    pub tray_hint_shown: bool,
     /// Global speed limit.
     pub speed_limit_enabled: bool,
     /// Global speed limit in KiB/s.
@@ -63,6 +70,9 @@ impl Default for Settings {
             confirm_delete: true,
             clipboard_monitor: false,
             notifications: true,
+            tray_icon: true,
+            close_to_tray: true,
+            tray_hint_shown: false,
             speed_limit_enabled: false,
             speed_limit_kib: 2048,
             user_agent: DEFAULT_USER_AGENT.to_owned(),
@@ -157,5 +167,22 @@ mod tests {
         assert!(Settings { small_file_limit: false, ..Settings::default() }.small_file_policy().is_none());
         let s = Settings { small_file_mb: 0, small_file_connections: 0, ..Settings::default() }.normalized();
         assert_eq!((s.small_file_mb, s.small_file_connections), (1, 1));
+    }
+
+    #[test]
+    fn tray_settings() {
+        // Settings files from 0.2.x don't have the keys: tray icon and
+        // close-to-tray on, the one-time notice not shown yet.
+        let s: Settings = serde_json::from_str(r#"{"max_concurrent":4,"notifications":false}"#).unwrap();
+        assert!(s.tray_icon);
+        assert!(s.close_to_tray);
+        assert!(!s.tray_hint_shown);
+        assert!(!s.notifications);
+        // Turned off / shown stays that way.
+        let s: Settings =
+            serde_json::from_str(r#"{"tray_icon":false,"close_to_tray":false,"tray_hint_shown":true}"#).unwrap();
+        assert!(!s.tray_icon && !s.close_to_tray && s.tray_hint_shown);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
     }
 }
